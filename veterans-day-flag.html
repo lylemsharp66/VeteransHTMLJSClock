@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Date and time</title>
+<style>
+  /*
+    Put your flag image in the same folder as this file, named flag.png
+    (or .jpg, .jpeg, .webp, .svg, .gif), or pass ?img=yourfile.png.
+    If none loads, a message says where it looked and the flag is drawn
+    in code instead.
+
+    Testing on another day:
+      ?mode=flag        always show the flag
+      ?mode=clock       always show the clock
+      ?date=2026-11-11  pretend today is that date
+  */
+  :root {
+    color-scheme: light;
+    --bg: #eef1f4;
+    --ink: #1d2733;
+    --muted: #5d6b79;
+    --sky-top: #c9d6e3;
+    --sky-bottom: #eef1f4;
+    --pole: #8a8f96;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --bg: #10161d;
+      --ink: #e8edf2;
+      --muted: #9aa8b6;
+      --sky-top: #1b2a3a;
+      --sky-bottom: #10161d;
+      --pole: #b9bec5;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+  }
+  body.flag-day {
+    background: linear-gradient(var(--sky-top), var(--sky-bottom) 70%);
+  }
+  main {
+    width: min(92vw, 1100px);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1.5rem;
+  }
+  #clock {
+    text-align: center;
+  }
+  #time {
+    font-size: clamp(3.5rem, 14vw, 10rem);
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+  }
+  #date {
+    margin-top: 0.75rem;
+    font-size: clamp(1.1rem, 3.2vw, 1.8rem);
+    color: var(--muted);
+  }
+  #flagWrap { display: none; width: 100%; }
+  body.flag-day #flagWrap { display: block; }
+  body.flag-day #time { font-size: clamp(1.6rem, 5vw, 2.6rem); }
+  body.flag-day #date { font-size: clamp(1rem, 2.4vw, 1.3rem); margin-top: 0.35rem; }
+  #occasion {
+    display: none;
+    font-size: clamp(1.8rem, 5vw, 3rem);
+    margin: 0 0 0.25rem;
+    font-weight: normal;
+  }
+  body.flag-day #occasion { display: block; }
+  #status { margin: 0; font: 0.85rem system-ui, sans-serif; color: var(--muted); text-align: center; max-width: 60ch; }
+  #status:empty { display: none; }
+  canvas { display: block; width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<main>
+  <div id="flagWrap"><canvas id="flag" aria-label="American flag waving in the wind" role="img"></canvas></div>
+  <div id="clock">
+    <h1 id="occasion">Veterans Day</h1>
+    <div id="time" aria-live="off"></div>
+    <div id="date"></div>
+  </div>
+  <p id="status" role="status"></p>
+</main>
+
+<script>
+(() => {
+  // ---- Settings -----------------------------------------------------------
+  // Your flag image, relative to this HTML file. Tried in order; first one that loads wins.
+  // You can also pass ?img=path/to/file.jpg in the URL.
+  const FLAG_CANDIDATES = ["flag.png", "flag.jpg", "flag.jpeg", "flag.webp", "flag.svg", "flag.gif"];
+  // Windows with "Animation effects" turned off reports reduced motion to every browser.
+  // Set to true if you want the flag to hold still for those users.
+  const RESPECT_REDUCED_MOTION = false;
+  const AMPLITUDE = 0.045;       // wave height, as a fraction of flag height
+  const WAVELENGTH = 0.55;       // wave length, as a fraction of flag width
+  const SPEED = 2.4;             // radians per second
+  const STRIP = 2;               // strip width in px (smaller = smoother)
+
+  // ---- Which day is it? ---------------------------------------------------
+  const params = new URLSearchParams(location.search);
+  const forcedMode = params.get("mode");           // "flag" | "clock"
+  const fakeDate = params.get("date");             // "YYYY-MM-DD"
+  const dateOffset = (() => {
+    if (!fakeDate) return 0;
+    const [y, m, d] = fakeDate.split("-").map(Number);
+    if (!y || !m || !d) return 0;
+    const now = new Date();
+    const target = new Date(y, m - 1, d, now.getHours(), now.getMinutes(), now.getSeconds());
+    return target - now;
+  })();
+  const now = () => new Date(Date.now() + dateOffset);
+
+  // Veterans Day is November 11 every year (local time).
+  const isVeteransDay = d => d.getMonth() === 10 && d.getDate() === 11;
+  const showFlag = d =>
+    forcedMode === "flag" ? true : forcedMode === "clock" ? false : isVeteransDay(d);
+
+  // ---- Clock --------------------------------------------------------------
+  const timeEl = document.getElementById("time");
+  const dateEl = document.getElementById("date");
+  const timeFmt = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" });
+  const dateFmt = new Intl.DateTimeFormat(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+
+  let flagOn = null;
+  function tick() {
+    const d = now();
+    timeEl.textContent = timeFmt.format(d);
+    dateEl.textContent = dateFmt.format(d);
+    const want = showFlag(d);
+    if (want !== flagOn) {           // switches automatically at midnight
+      flagOn = want;
+      document.body.classList.toggle("flag-day", flagOn);
+      document.title = flagOn ? "Veterans Day" : "Date and time";
+      if (flagOn) startFlag(); else stopFlag();
+    }
+  }
+
+  // ---- Flag source: image file, or drawn fallback -------------------------
+  function drawFallbackFlag() {
+    const H = 400, W = Math.round(H * 1.9);
+    const c = document.createElement("canvas");
+    c.width = W; c.height = H;
+    const g = c.getContext("2d");
+    const stripe = H / 13;
+    for (let i = 0; i < 13; i++) {
+      g.fillStyle = i % 2 === 0 ? "#B22234" : "#FFFFFF";
+      g.fillRect(0, i * stripe, W, Math.ceil(stripe));
+    }
+    const cw = H * 0.76, ch = stripe * 7;
+    g.fillStyle = "#3C3B6E";
+    g.fillRect(0, 0, cw, ch);
+    // 50 stars: 9 rows alternating 6 and 5
+    const r = H * 0.0616 / 2, sx = cw / 12, sy = ch / 10;
+    g.fillStyle = "#FFFFFF";
+    for (let row = 0; row < 9; row++) {
+      const count = row % 2 === 0 ? 6 : 5;
+      for (let col = 0; col < count; col++) {
+        const x = sx * (row % 2 === 0 ? 1 + col * 2 : 2 + col * 2);
+        const y = sy * (row + 1);
+        star(g, x, y, r);
+      }
+    }
+    return c;
+  }
+  function star(g, cx, cy, R) {
+    const r = R * 0.382;
+    g.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const a = -Math.PI / 2 + i * Math.PI / 5;
+      const rad = i % 2 === 0 ? R : r;
+      g.lineTo(cx + Math.cos(a) * rad, cy + Math.sin(a) * rad);
+    }
+    g.closePath();
+    g.fill();
+  }
+
+  let source = drawFallbackFlag();
+  const statusEl = document.getElementById("status");
+  const candidates = params.get("img") ? [params.get("img")] : FLAG_CANDIDATES;
+  const img = new Image();
+  let tryIndex = 0;
+  img.onload = () => {
+    source = img;
+    statusEl.textContent = "";
+    if (flagOn) startFlag();
+  };
+  img.onerror = () => {
+    tryIndex++;
+    if (tryIndex < candidates.length) {
+      img.src = candidates[tryIndex];
+    } else {
+      const folder = new URL(".", location.href).href;
+      statusEl.textContent = "No flag image found in " + decodeURI(folder) +
+        " (looked for " + candidates.join(", ") + "). Showing the built-in flag.";
+    }
+  };
+  img.src = candidates[0];
+
+  // ---- Waving animation ---------------------------------------------------
+  const canvas = document.getElementById("flag");
+  const ctx = canvas.getContext("2d");
+  const reduceMotion = RESPECT_REDUCED_MOTION
+    ? matchMedia("(prefers-reduced-motion: reduce)")
+    : { matches: false };
+  let raf = null, start = performance.now();
+
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const cssW = canvas.clientWidth || 800;
+    const cssH = Math.min(cssW * 0.62, window.innerHeight * 0.62);
+    canvas.style.height = cssH + "px";
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
+  }
+
+  function frame(t) {
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+
+    // Layout: pole on the left, flag hanging from it
+    const poleX = W * 0.06, poleW = Math.max(4, W * 0.008);
+    const flagH = H * 0.72;
+    const srcW = source.naturalWidth || source.width;
+    const srcH = source.naturalHeight || source.height;
+    const flagW = Math.min(flagH * (srcW / srcH), W - poleX - poleW - W * 0.04);
+    const fx = poleX + poleW, fy = H * 0.1;
+
+    // Pole and finial
+    const poleColor = getComputedStyle(document.documentElement).getPropertyValue("--pole").trim();
+    ctx.fillStyle = poleColor;
+    ctx.fillRect(poleX, fy - H * 0.04, poleW, H);
+    ctx.beginPath();
+    ctx.arc(poleX + poleW / 2, fy - H * 0.05, poleW * 1.4, 0, Math.PI * 2);
+    ctx.fillStyle = "#c9a646";
+    ctx.fill();
+
+    const time = reduceMotion.matches ? 0.8 : (t - start) / 1000;
+    const amp = AMPLITUDE * flagH;
+    const k = (Math.PI * 2) / (WAVELENGTH * flagW);
+
+    for (let x = 0; x < flagW; x += STRIP) {
+      const p = x / flagW;                       // 0 at the pole, 1 at the fly end
+      const ease = Math.pow(p, 0.8);             // pole edge stays put
+      const phase = k * x - SPEED * time;
+      const dy = Math.sin(phase) * amp * ease
+               + Math.sin(phase * 0.5 + 1.3) * amp * 0.35 * ease;
+      const slope = Math.cos(phase) * ease;      // drives the light/shadow
+
+      const sx = p * srcW;
+      const sw = Math.max(1, (STRIP / flagW) * srcW);
+      const w = STRIP + 0.6;                     // overlap avoids hairline gaps
+      ctx.drawImage(source, sx, 0, sw, srcH, fx + x, fy + dy, w, flagH);
+
+      // Fold shading: highlights on one side of each ripple, shadow on the other
+      if (slope > 0) {
+        ctx.fillStyle = `rgba(255,255,255,${0.16 * slope})`;
+      } else {
+        ctx.fillStyle = `rgba(0,0,0,${0.24 * -slope})`;
+      }
+      ctx.fillRect(fx + x, fy + dy, w, flagH);
+    }
+
+    if (!reduceMotion.matches) raf = requestAnimationFrame(frame);
+  }
+
+  function startFlag() {
+    resize();
+    stopFlag();
+    raf = requestAnimationFrame(frame);
+  }
+  function stopFlag() {
+    if (raf) cancelAnimationFrame(raf);
+    raf = null;
+  }
+
+  window.addEventListener("resize", () => { if (flagOn) startFlag(); });
+  reduceMotion.addEventListener?.("change", () => { if (flagOn) startFlag(); });
+
+  tick();
+  setInterval(tick, 1000);
+})();
+</script>
+</body>
+</html>
